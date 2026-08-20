@@ -118,22 +118,36 @@ def setup_env(monkeypatch: MonkeyPatch, **kwargs):
 
 
 def test_create_file_token():
-    file_path = Path(__file__).parent
-    file_token = security.create_file_token(file_path)
+    file_key = "backups/test.zip"
+    file_token = security.create_file_token(file_key)
 
-    assert file_path == validate_file_token(file_token)
+    assert file_key == validate_file_token(file_token)
+
+
+def test_validate_file_token_legacy_absolute_path():
+    dirs = get_app_dirs()
+
+    # Tokens minted before the storage-key migration carry an absolute path claim
+    legacy_token = security.create_file_token(str(dirs.BACKUP_DIR / "test.zip"))
+    assert validate_file_token(legacy_token) == "backups/test.zip"
 
 
 @pytest.mark.asyncio
 async def test_download_file_security_restrictions():
     dirs = get_app_dirs()
 
-    # Test 1: File in DATA_DIR but outside allowed dirs should be blocked
-    secret_file = dirs.DATA_DIR / ".secret"
-
-    with pytest.raises(HTTPException) as exc_info:
-        await download_file(secret_file)
-    assert exc_info.value.status_code == 400
+    # Test 1: Keys outside the allowed prefixes should be blocked
+    blocked_keys = [
+        ".secret",
+        "recipes/some-recipe-id/images/original.webp",
+        "backups/../.secret",
+        "/etc/passwd",
+        str(dirs.DATA_DIR / ".secret"),
+    ]
+    for blocked_key in blocked_keys:
+        with pytest.raises(HTTPException) as exc_info:
+            validate_file_token(security.create_file_token(blocked_key))
+        assert exc_info.value.status_code == 400
 
     # Test 2: File in BACKUP_DIR should be allowed (but only if it exists)
     backup_file = dirs.BACKUP_DIR / "test.zip"
@@ -141,9 +155,10 @@ async def test_download_file_security_restrictions():
     backup_file.write_text("test backup content")
 
     try:
-        response = await download_file(backup_file)
+        file_key = validate_file_token(security.create_file_token("backups/test.zip"))
+        response = await download_file(file_key)
         assert response.media_type == "application/octet-stream"
-        assert response.path == backup_file
+        assert Path(response.path) == backup_file.resolve()
     finally:
         backup_file.unlink(missing_ok=True)
 
@@ -154,9 +169,10 @@ async def test_download_file_security_restrictions():
     export_file.write_text("test export content")
 
     try:
-        response = await download_file(export_file)
+        file_key = validate_file_token(security.create_file_token("groups/some-group-id/export/test.zip"))
+        response = await download_file(file_key)
         assert response.media_type == "application/octet-stream"
-        assert response.path == export_file
+        assert Path(response.path) == export_file.resolve()
     finally:
         export_file.unlink(missing_ok=True)
         # Clean up the directory structure

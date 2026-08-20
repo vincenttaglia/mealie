@@ -1,5 +1,4 @@
 from collections.abc import Generator
-from pathlib import Path
 
 import pytest
 import sqlalchemy
@@ -134,7 +133,7 @@ def test_bulk_export_recipes(api_client: TestClient, unique_user: TestUser, ten_
 
     response_data = response.json()
 
-    assert validate_file_token(response_data["fileToken"]) == Path(export_path)
+    assert validate_file_token(response_data["fileToken"]) == export_path
 
     # Use Export Token to download export
     response = api_client.get(f"/api/utils/download?token={response_data['fileToken']}")

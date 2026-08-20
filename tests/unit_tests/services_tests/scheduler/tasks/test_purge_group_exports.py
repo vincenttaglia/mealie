@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
+from mealie.core.config import get_app_dirs
 from mealie.schema.recipe.recipe import Recipe
 from mealie.services.recipe.recipe_bulk_service import RecipeBulkActionsService
 from mealie.services.scheduler.tasks.purge_group_exports import purge_group_data_exports
@@ -35,7 +36,7 @@ def test_purge_group_exports(unique_user: TestUser):
     exports = recipe_exporter.get_exports()
     assert len(exports) == 1
     export = exports[0]
-    export_path = Path(export.path)
+    export_path = get_app_dirs().DATA_DIR / export.path
     assert export_path.exists()
 
     # purge the export and confirm all data is removed
