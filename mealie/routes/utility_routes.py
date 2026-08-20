@@ -1,31 +1,18 @@
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, status
-from starlette.responses import FileResponse
+from starlette.responses import Response
 
-from mealie.core.config import get_app_dirs
+from mealie.core.config import get_storage
 from mealie.core.dependencies import validate_file_token
+from mealie.pkgs.storage import StorageFileNotFoundError, storage_response
 
 router = APIRouter(prefix="/api/utils", tags=["Utils"], include_in_schema=True)
 
 
 @router.get("/download")
-async def download_file(file_path: Path = Depends(validate_file_token)):
-    """Uses a file token obtained by an active user to retrieve a file from the operating
-    system."""
+async def download_file(file_key: str = Depends(validate_file_token)) -> Response:
+    """Uses a file token obtained by an active user to retrieve a file from storage."""
 
-    file_path = Path(file_path).resolve()
-
-    dirs = get_app_dirs()
-    allowed_dirs = [
-        dirs.BACKUP_DIR,  # admin backups
-        dirs.GROUPS_DIR,  # group exports
-    ]
-
-    if not any(file_path.is_relative_to(allowed_dir) for allowed_dir in allowed_dirs):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
-
-    if not file_path.is_file():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
-
-    return FileResponse(file_path, media_type="application/octet-stream", filename=file_path.name)
+    try:
+        return storage_response(get_storage(), file_key, media_type="application/octet-stream", attachment=True)
+    except StorageFileNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND) from e

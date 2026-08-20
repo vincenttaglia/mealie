@@ -1,7 +1,7 @@
 import tempfile
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from shutil import rmtree
 from uuid import uuid4
 
@@ -13,7 +13,7 @@ from jwt.exceptions import PyJWTError
 from sqlalchemy.orm.session import Session
 
 from mealie.core import root_logger
-from mealie.core.config import get_app_dirs, get_app_settings
+from mealie.core.config import determine_data_dir, get_app_dirs, get_app_settings
 from mealie.db.db_setup import generate_session
 from mealie.repos.all_repositories import get_repositories
 from mealie.schema.user import PrivateUser, TokenData
@@ -149,13 +149,15 @@ def validate_long_live_token(session: Session, client_token: str, user_id: str) 
         raise HTTPException(status.HTTP_401_UNAUTHORIZED) from e
 
 
-def validate_file_token(token: str | None = None) -> Path:
+ALLOWED_FILE_TOKEN_PREFIXES = ("backups/", "groups/")
+
+
+def validate_file_token(token: str | None = None) -> str:
     """
-    Args:
-        token (Optional[str], optional): _description_. Defaults to None.
+    Validates a file token and returns the storage key it grants access to.
 
     Raises:
-        HTTPException: 400 Bad Request when no token or the file doesn't exist
+        HTTPException: 400 Bad Request when no token or the key is not allowed
         HTTPException: 401 Unauthorized when the token is invalid
     """
     if not token:
@@ -163,17 +165,27 @@ def validate_file_token(token: str | None = None) -> Path:
 
     try:
         payload = jwt.decode(token, settings.SECRET, algorithms=[ALGORITHM])
-        file_path = Path(payload.get("file"))
+        file_claim: str | None = payload.get("file")
     except PyJWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="could not validate file token",
         ) from e
 
-    if not file_path.exists():
+    if not file_claim:
         raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
-    return file_path
+    file_key = file_claim
+    if Path(file_claim).is_absolute():
+        try:
+            file_key = Path(file_claim).resolve().relative_to(determine_data_dir().resolve()).as_posix()
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST) from e
+
+    if ".." in PurePosixPath(file_key).parts or not file_key.startswith(ALLOWED_FILE_TOKEN_PREFIXES):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+
+    return file_key
 
 
 @contextmanager

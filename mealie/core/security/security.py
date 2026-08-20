@@ -1,6 +1,5 @@
 import secrets
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import jwt
 from sqlalchemy.orm.session import Session
@@ -40,8 +39,8 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     return jwt.encode(to_encode, settings.SECRET, algorithm=ALGORITHM)
 
 
-def create_file_token(file_path: Path) -> str:
-    token_data = {"file": str(file_path)}
+def create_file_token(file_key: str) -> str:
+    token_data = {"file": file_key}
     return create_access_token(token_data, expires_delta=timedelta(minutes=30))
 
 

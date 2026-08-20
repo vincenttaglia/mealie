@@ -1,9 +1,9 @@
 import datetime
-import shutil
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
+from mealie.core.config import determine_data_dir, get_storage
 from mealie.pkgs.stats.fs_stats import pretty_size
 from mealie.repos.all_repositories import AllRepositories
 from mealie.schema.group.group_exports import GroupDataExport
@@ -11,6 +11,24 @@ from mealie.schema.user import GroupInDB
 
 from .._base_service import BaseService
 from ._abc_exporter import ABCExporter
+
+
+def resolve_export_storage_key(path: str) -> str:
+    """
+    Returns the storage key for a group data export's stored path, relativizing
+    legacy rows that hold absolute filesystem paths.
+    """
+    if not Path(path).is_absolute():
+        return path
+
+    try:
+        return Path(path).relative_to(determine_data_dir()).as_posix()
+    except ValueError:
+        posix = PurePosixPath(path).as_posix()
+        index = posix.rfind("groups/")
+        if index != -1:
+            return posix[index:]
+        return path
 
 
 class Exporter(BaseService):
@@ -32,17 +50,18 @@ class Exporter(BaseService):
 
         export_id = uuid4()
 
-        export_path = GroupInDB.get_export_directory(self.group_id) / f"{export_id}.zip"
+        export_key = f"{GroupInDB.export_prefix(self.group_id)}{export_id}.zip"
+        export_size = self.temp_path.stat().st_size
 
-        shutil.copy(self.temp_path, export_path)
+        get_storage().write_file(export_key, self.temp_path, content_type="application/zip")
 
         group_data_export = GroupDataExport(
             id=export_id,
             group_id=self.group_id,
-            path=str(export_path),
+            path=export_key,
             name="Data Export",
-            size=pretty_size(export_path.stat().st_size),
-            filename=export_path.name,
+            size=pretty_size(export_size),
+            filename=f"{export_id}.zip",
             expires=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1),
         )
 

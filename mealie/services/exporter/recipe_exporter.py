@@ -34,8 +34,8 @@ class RecipeExporter(ABCExporter):
             )
 
     def _post_export_hook(self, item: Recipe) -> None:
-        """Copy recipe directory contents into the zip folder"""
-        recipe_dir = item.directory
-
-        if recipe_dir.exists() and self.write_dir_to_zip:
-            self.write_dir_to_zip(recipe_dir, f"{self.destination_dir}/{item.slug}", {".json"})
+        """Copy recipe storage contents into the zip folder"""
+        if item.id and self.write_dir_to_zip:
+            self.write_dir_to_zip(
+                Recipe.storage_prefix_from_id(item.id), f"{self.destination_dir}/{item.slug}", {".json"}
+            )

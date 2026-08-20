@@ -1,12 +1,14 @@
+import shutil
 import zipfile
 from abc import abstractmethod, abstractproperty
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePosixPath
 from uuid import UUID
 
 from pydantic import BaseModel
 
+from mealie.core.config import get_storage
 from mealie.core.root_logger import get_logger
 from mealie.repos.all_repositories import AllRepositories
 from mealie.schema.reports.reports import ReportEntryCreate
@@ -27,7 +29,7 @@ class ExportedItem:
 
 
 class ABCExporter(BaseService):
-    write_dir_to_zip: Callable[[Path, str, set[str] | None], None] | None = None
+    write_dir_to_zip: Callable[[str, str, set[str] | None], None] | None = None
 
     def __init__(self, db: AllRepositories, group_id: UUID) -> None:
         self.logger = get_logger()
@@ -69,20 +71,23 @@ class ABCExporter(BaseService):
 
         self.write_dir_to_zip = None
 
-    def write_dir_to_zip_func(self, zip: zipfile.ZipFile):
-        """Returns a recursive function that writes a directory to a zip file.
+    def write_dir_to_zip_func(self, zip: zipfile.ZipFile) -> Callable[[str, str, set[str] | None], None]:
+        """Returns a function that writes every file under a storage prefix to a zip file.
 
         Args:
             zip (zipfile.ZipFile):
         """
+        storage = get_storage()
 
-        def func(source_dir: Path, dest_dir: str, ignore_ext: set[str] | None = None) -> None:
+        def func(source_prefix: str, dest_dir: str, ignore_ext: set[str] | None = None) -> None:
             ignore_ext = ignore_ext or set()
 
-            for source_file in source_dir.iterdir():
-                if source_file.is_dir():
-                    func(source_file, f"{dest_dir}/{source_file.name}")
-                elif source_file.suffix not in ignore_ext:
-                    zip.write(source_file, f"{dest_dir}/{source_file.name}")
+            for entry in storage.iter_entries(source_prefix):
+                rel_path = entry.key.removeprefix(source_prefix)
+                if "/" not in rel_path and PurePosixPath(rel_path).suffix in ignore_ext:
+                    continue
+
+                with storage.open_read(entry.key) as source, zip.open(f"{dest_dir}/{rel_path}", "w") as dest:
+                    shutil.copyfileobj(source, dest)
 
         return func
