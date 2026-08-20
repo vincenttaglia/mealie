@@ -78,8 +78,15 @@ task py:check           # Format + lint + type-check + test (full validation)
 task py:format          # Ruff format
 task py:lint            # Ruff check
 task py:mypy            # Type checking
-task ui:test            # Vitest frontend tests
+task ui:test            # Vitest frontend tests (watch mode; single test: cd frontend && yarn vitest run path/to/test)
+task ui:lint            # ESLint frontend
 task ui:check           # Frontend lint + test
+```
+
+**End-to-end tests (Playwright, in `tests/e2e/`):**
+```bash
+task e2e                # Full suite: builds Docker image, starts containers, runs tests, tears down
+task e2e:test           # Run Playwright tests against an already-running server (task e2e:start-server)
 ```
 
 **Database:**
@@ -102,6 +109,7 @@ task docker:prod        # Build and run production Docker compose
    uv run python mealie/app.py
    uv run pytest tests/
    ```
+   When running `uv` outside of `task` commands, set `UV_FROZEN=1` — the project's rolling `exclude-newer` window (pyproject `[tool.uv]`) otherwise makes `uv run`/`uv sync` re-resolve and fail on in-window pins.
 
 2. **Type hints are mandatory:** Use mypy-compatible annotations, handle Optional types explicitly
 
@@ -124,6 +132,7 @@ task docker:prod        # Build and run production Docker compose
    - Fixtures in `tests/fixtures/`
    - Use `api_client` fixture for integration tests
    - Follow existing patterns in `tests/integration_tests/` and `tests/unit_tests/`
+   - `tests/multitenant_tests/` covers cross-group/household isolation - add cases there when touching data-scoping logic
 
 ### Frontend
 
@@ -221,6 +230,8 @@ task docker:prod        # Build and run production Docker compose
 - **Translation files:** Only modify `en-US` locale files - all other locales are managed by Crowdin
 - **Dev containers:** This project uses VS Code dev containers - leverage the pre-configured environment
 - **Task commands:** Use `task` commands instead of direct tool invocation for consistency
+- **`task dev:clean` is destructive:** It deletes all local dev data (SQLite DBs, Postgres volume, recipe/user files)
+- **`CLAUDE.md` is a symlink to `AGENTS.md`:** Edit `AGENTS.md`; the guide is shared across AI agents
 
 ## Key Files to Reference
 
