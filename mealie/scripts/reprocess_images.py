@@ -1,4 +1,5 @@
 import argparse
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -8,8 +9,12 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import UUID4
 
 from mealie.core import root_logger
+from mealie.core.config import get_storage
 from mealie.db.db_setup import session_context
 from mealie.db.models.recipe import RecipeModel
+from mealie.pkgs import img
+from mealie.pkgs.storage import StorageProvider
+from mealie.schema.recipe.recipe import Recipe
 from mealie.services.recipe.recipe_data_service import RecipeDataService
 
 logger = root_logger.get_logger()
@@ -26,14 +31,7 @@ def check_if_tiny_image_is_old(image_path: Path) -> bool:
         return img.width == 300 and img.height == 300
 
 
-def check_needs_reprocess(recipe_id: UUID4) -> bool:
-    """
-    Check if a recipe's images need reprocessing by examining tiny image dimensions.
-    New processing creates 600x600 tiny images, old processing created 300x300.
-
-    Returns True if needs reprocessing (has old 300x300 tiny image or missing images).
-    """
-
+def check_needs_reprocess_local(recipe_id: UUID4) -> bool:
     try:
         service = RecipeDataService(recipe_id)
         tiny_path = service.dir_image / "tiny-original.webp"
@@ -56,22 +54,44 @@ def check_needs_reprocess(recipe_id: UUID4) -> bool:
         return False
 
 
-def fetch_recipe_ids(force_all: bool = False) -> set[UUID4]:
-    logger.info("Fetching recipes for image reprocessing")
+def check_needs_reprocess_remote(storage: StorageProvider, recipe_id: UUID4) -> bool:
+    try:
+        if not storage.exists(Recipe.image_key_from_id(recipe_id, "original.webp")):
+            return False  # Cannot reprocess without original image
 
-    with session_context() as session:
-        result = session.execute(sa.text(f"SELECT id FROM {RecipeModel.__tablename__}"))
+        if not storage.exists(Recipe.image_key_from_id(recipe_id, "tiny-original.webp")):
+            return True  # Needs reprocessing if tiny image is missing
 
-    recipe_ids = {UUID4(str(row[0])) for row in result}
-    if force_all:
-        logger.info("!!Force processing all recipes regardless of current image state")
-        return recipe_ids
+    except Exception:
+        logger.error(f"Failed to access recipe {recipe_id} images for reprocessing check; skipping")
+        return False
 
-    else:
-        return {recipe_id for recipe_id in recipe_ids if check_needs_reprocess(recipe_id)}
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tiny_path = Path(temp_dir) / "tiny-original.webp"
+            storage.download_to_file(Recipe.image_key_from_id(recipe_id, "tiny-original.webp"), tiny_path)
+            return check_if_tiny_image_is_old(tiny_path)
+    except Exception:
+        logger.error(f"Failed to open tiny image for recipe {recipe_id}; assuming reprocessing needed")
+        return False
 
 
-def reprocess_recipe_images(recipe_id: UUID4, force_all: bool = False) -> None:
+def check_needs_reprocess(recipe_id: UUID4) -> bool:
+    """
+    Check if a recipe's images need reprocessing by examining tiny image dimensions.
+    New processing creates 600x600 tiny images, old processing created 300x300.
+
+    Returns True if needs reprocessing (has old 300x300 tiny image or missing images).
+    """
+
+    storage = get_storage()
+    if storage.get_local_path(Recipe.image_prefix_from_id(recipe_id)) is not None:
+        return check_needs_reprocess_local(recipe_id)
+
+    return check_needs_reprocess_remote(storage, recipe_id)
+
+
+def reprocess_recipe_images_local(recipe_id: UUID4, force_all: bool = False) -> None:
     service = RecipeDataService(recipe_id, logger=minifier_logger)
     original_image = service.dir_image / "original.webp"
     if not original_image.exists():
@@ -117,6 +137,93 @@ def reprocess_recipe_images(recipe_id: UUID4, force_all: bool = False) -> None:
         except Exception:
             # Silently skip these; they're not as important and there could be a lot of them which could spam logs
             continue
+
+
+def _reprocess_remote_image_dir(
+    storage: StorageProvider, minifier: img.ABCMinifier, key_prefix: str, work_dir: Path
+) -> None:
+    original_image = work_dir / "original.webp"
+    storage.download_to_file(f"{key_prefix}original.webp", original_image)
+
+    for image_filename in NON_ORIGINAL_FILENAMES:
+        storage.delete(f"{key_prefix}{image_filename}")
+
+    minifier.minify(original_image, force=True)
+
+    for image_filename in NON_ORIGINAL_FILENAMES:
+        result = work_dir / image_filename
+        if result.is_file():
+            storage.write_file(f"{key_prefix}{image_filename}", result, content_type="image/webp")
+
+
+def reprocess_recipe_images_remote(storage: StorageProvider, recipe_id: UUID4, force_all: bool = False) -> None:
+    minifier = img.PillowMinifier(purge=True, logger=minifier_logger)
+
+    image_prefix = Recipe.image_prefix_from_id(recipe_id)
+    if not storage.exists(f"{image_prefix}original.webp"):
+        # Double-check that original image exists. We may have skipped this if we're using force_all
+        logger.error(f"Original image missing for recipe {recipe_id}; cannot reprocess")
+        return
+
+    # Reprocess recipe images
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _reprocess_remote_image_dir(storage, minifier, image_prefix, Path(temp_dir))
+    except UnidentifiedImageError:
+        pass  # source image is corrupted or invalid; skip
+    except Exception:
+        logger.exception(f"Failed to reprocess images for recipe {recipe_id}")
+
+    # Reprocess timeline event images
+    timeline_prefix = f"{image_prefix}timeline/"
+    event_ids = {
+        entry.key.removeprefix(timeline_prefix).split("/", 1)[0]
+        for entry in storage.iter_entries(timeline_prefix)
+        if entry.key.removeprefix(timeline_prefix).endswith("/original.webp")
+    }
+
+    for event_id in sorted(event_ids):
+        try:
+            event_prefix = f"{timeline_prefix}{event_id}/"
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                work_dir = Path(temp_dir)
+
+                if not force_all and storage.exists(f"{event_prefix}tiny-original.webp"):
+                    event_tiny = work_dir / "tiny-original.webp"
+                    storage.download_to_file(f"{event_prefix}tiny-original.webp", event_tiny)
+                    if not check_if_tiny_image_is_old(event_tiny):
+                        continue
+
+                    event_tiny.unlink(missing_ok=True)
+
+                _reprocess_remote_image_dir(storage, minifier, event_prefix, work_dir)
+        except Exception:
+            # Silently skip these; they're not as important and there could be a lot of them which could spam logs
+            continue
+
+
+def reprocess_recipe_images(recipe_id: UUID4, force_all: bool = False) -> None:
+    storage = get_storage()
+    if storage.get_local_path(Recipe.image_prefix_from_id(recipe_id)) is not None:
+        reprocess_recipe_images_local(recipe_id, force_all)
+    else:
+        reprocess_recipe_images_remote(storage, recipe_id, force_all)
+
+
+def fetch_recipe_ids(force_all: bool = False) -> set[UUID4]:
+    logger.info("Fetching recipes for image reprocessing")
+
+    with session_context() as session:
+        result = session.execute(sa.text(f"SELECT id FROM {RecipeModel.__tablename__}"))
+
+    recipe_ids = {UUID4(str(row[0])) for row in result}
+    if force_all:
+        logger.info("!!Force processing all recipes regardless of current image state")
+        return recipe_ids
+
+    else:
+        return {recipe_id for recipe_id in recipe_ids if check_needs_reprocess(recipe_id)}
 
 
 def process_recipe(recipe_id: UUID4, force_all: bool = False) -> tuple[UUID4, bool]:
