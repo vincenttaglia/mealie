@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
-from uuid import UUID
 
 from pydantic import UUID4, BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy.orm import joinedload, selectinload
@@ -274,12 +273,6 @@ class GroupInDB(UpdateGroup):
         return group_dir
 
     @staticmethod
-    def get_export_directory(id: UUID) -> Path:
-        export_dir = GroupInDB.get_directory(id) / "export"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        return export_dir
-
-    @staticmethod
     def storage_prefix(id: UUID4 | str) -> str:
         """Storage key prefix for the group's files, relative to the data directory; no filesystem side effects"""
         return f"groups/{id}/"
@@ -292,10 +285,6 @@ class GroupInDB(UpdateGroup):
     @property
     def directory(self) -> Path:
         return GroupInDB.get_directory(self.id)
-
-    @property
-    def exports(self) -> Path:
-        return GroupInDB.get_export_directory(self.id)
 
     @classmethod
     def loader_options(cls) -> list[LoaderOption]:

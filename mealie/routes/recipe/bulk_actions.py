@@ -1,5 +1,4 @@
 from functools import cached_property
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import UUID4
@@ -17,6 +16,7 @@ from mealie.schema.recipe.recipe_bulk_actions import (
     ExportRecipes,
 )
 from mealie.schema.response.responses import ErrorResponse, SuccessResponse
+from mealie.services.exporter import resolve_export_storage_key
 from mealie.services.recipe.recipe_bulk_service import RecipeBulkActionsService
 from mealie.services.recipe.recipe_service import RecipeService
 
@@ -70,8 +70,8 @@ class RecipeBulkActionsController(BaseUserController):
         if not export:
             raise HTTPException(404, "export not found")
 
-        path = Path(export.path).resolve()
-        return {"fileToken": create_file_token(path)}
+        export_key = resolve_export_storage_key(export.path)
+        return {"fileToken": create_file_token(export_key)}
 
     @router.get("/export", response_model=list[GroupDataExport])
     def get_exported_data(self):

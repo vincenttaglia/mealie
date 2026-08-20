@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pydantic import UUID4
 
+from mealie.core.config import get_storage
 from mealie.core.exceptions import UnexpectedNone
 from mealie.repos.repository_factory import AllRepositories
 from mealie.schema.group.group_exports import GroupDataExport
@@ -11,7 +12,7 @@ from mealie.schema.recipe.recipe_settings import RecipeSettings
 from mealie.schema.response.pagination import PaginationQuery
 from mealie.schema.user.user import GroupInDB, PrivateUser
 from mealie.services._base_service import BaseService
-from mealie.services.exporter import Exporter, RecipeExporter
+from mealie.services.exporter import Exporter, RecipeExporter, resolve_export_storage_key
 
 
 class RecipeBulkActionsService(BaseService):
@@ -35,12 +36,13 @@ class RecipeBulkActionsService(BaseService):
         return self.repos.group_exports.get_one(id)
 
     def purge_exports(self) -> int:
+        storage = get_storage()
         all_exports = self.get_exports()
 
         exports_deleted = 0
         for export in all_exports:
             try:
-                Path(export.path).unlink(missing_ok=True)
+                storage.delete(resolve_export_storage_key(export.path), missing_ok=True)
                 self.repos.group_exports.delete(export.id)
                 exports_deleted += 1
             except Exception as e:
@@ -52,9 +54,9 @@ class RecipeBulkActionsService(BaseService):
         if group is None:
             raise UnexpectedNone("Failed to purge exports for group, no group found")
 
-        for match in group.directory.glob("**/export/*zip"):
-            if match.is_file():
-                match.unlink()
+        for entry in storage.iter_entries(GroupInDB.storage_prefix(group.id)):
+            if "/export/" in entry.key and entry.key.endswith(".zip"):
+                storage.delete(entry.key, missing_ok=True)
                 exports_deleted += 1
 
         return exports_deleted
