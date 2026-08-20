@@ -222,6 +222,11 @@ class PrivateUser(UserOut):
         user_dir.mkdir(parents=True, exist_ok=True)
         return user_dir
 
+    @staticmethod
+    def storage_prefix(user_id: UUID4 | str) -> str:
+        """Storage key prefix for the user's files, relative to the data directory; no filesystem side effects"""
+        return f"users/{user_id}/"
+
     @property
     def is_locked(self) -> bool:
         if self.locked_at is None:
@@ -273,6 +278,16 @@ class GroupInDB(UpdateGroup):
         export_dir = GroupInDB.get_directory(id) / "export"
         export_dir.mkdir(parents=True, exist_ok=True)
         return export_dir
+
+    @staticmethod
+    def storage_prefix(id: UUID4 | str) -> str:
+        """Storage key prefix for the group's files, relative to the data directory; no filesystem side effects"""
+        return f"groups/{id}/"
+
+    @staticmethod
+    def export_prefix(id: UUID4 | str) -> str:
+        """Storage key prefix for the group's data exports; no filesystem side effects"""
+        return f"groups/{id}/export/"
 
     @property
     def directory(self) -> Path:

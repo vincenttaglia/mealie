@@ -215,6 +215,38 @@ class Recipe(RecipeSummary):
     def timeline_image_dir_from_id(cls, recipe_id: UUID4 | str, timeline_event_id: UUID4 | str) -> Path:
         return cls._get_dir(cls.image_dir_from_id(recipe_id).joinpath("timeline").joinpath(str(timeline_event_id)))
 
+    # Storage keys (POSIX-style, relative to the data directory) for use with the
+    # StorageProvider abstraction; unlike the Path builders above, these have no
+    # filesystem side effects.
+
+    @classmethod
+    def storage_prefix_from_id(cls, recipe_id: UUID4 | str) -> str:
+        return f"recipes/{recipe_id}/"
+
+    @classmethod
+    def image_prefix_from_id(cls, recipe_id: UUID4 | str) -> str:
+        return f"recipes/{recipe_id}/images/"
+
+    @classmethod
+    def image_key_from_id(cls, recipe_id: UUID4 | str, file_name: str) -> str:
+        return f"recipes/{recipe_id}/images/{file_name}"
+
+    @classmethod
+    def asset_prefix_from_id(cls, recipe_id: UUID4 | str) -> str:
+        return f"recipes/{recipe_id}/assets/"
+
+    @classmethod
+    def asset_key_from_id(cls, recipe_id: UUID4 | str, file_name: str) -> str:
+        return f"recipes/{recipe_id}/assets/{file_name}"
+
+    @classmethod
+    def timeline_image_prefix_from_id(cls, recipe_id: UUID4 | str, timeline_event_id: UUID4 | str) -> str:
+        return f"recipes/{recipe_id}/images/timeline/{timeline_event_id}/"
+
+    @classmethod
+    def timeline_image_key_from_id(cls, recipe_id: UUID4 | str, timeline_event_id: UUID4 | str, file_name: str) -> str:
+        return f"recipes/{recipe_id}/images/timeline/{timeline_event_id}/{file_name}"
+
     @property
     def directory(self) -> Path:
         if not self.id:

@@ -79,6 +79,18 @@ class RecipeTimelineEventOut(RecipeTimelineEventCreate):
     def image_dir(self) -> Path:
         return self.image_dir_from_id(self.recipe_id, self.id)
 
+    @classmethod
+    def image_prefix_from_id(cls, recipe_id: UUID4 | str, timeline_event_id: UUID4 | str) -> str:
+        return Recipe.timeline_image_prefix_from_id(recipe_id, timeline_event_id)
+
+    @classmethod
+    def image_key_from_id(cls, recipe_id: UUID4 | str, timeline_event_id: UUID4 | str, file_name: str) -> str:
+        return Recipe.timeline_image_key_from_id(recipe_id, timeline_event_id, file_name)
+
+    @property
+    def image_prefix(self) -> str:
+        return self.image_prefix_from_id(self.recipe_id, self.id)
+
 
 class RecipeTimelineEventPagination(PaginationBase):
     items: list[RecipeTimelineEventOut]

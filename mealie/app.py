@@ -66,6 +66,15 @@ async def lifespan_fn(_: FastAPI) -> AsyncGenerator[None, None]:
     init_db.main()
     logger.info("end: database initialization")
 
+    if settings.STORAGE_PROVIDER != "local":
+        # Fail startup on an unreachable/misconfigured object store rather than
+        # booting into silent data loss.
+        from mealie.core.config import get_storage
+
+        logger.info("start: storage connectivity check")
+        get_storage().ping()
+        logger.info("end: storage connectivity check")
+
     await start_scheduler()
 
     logger.info("-----SYSTEM STARTUP-----")
@@ -88,6 +97,8 @@ async def lifespan_fn(_: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(settings.LDAP_FEATURE)
     logger.info("--------==OIDC==--------")
     logger.info(settings.OIDC_FEATURE)
+    logger.info("-----==S3 STORAGE==-----")
+    logger.info(settings.STORAGE_FEATURE)
     logger.info("------------------------")
 
     yield

@@ -8,7 +8,7 @@ from typing import Annotated, Literal, NamedTuple
 from urllib.parse import urlparse
 
 from dateutil.tz import tzlocal
-from pydantic import PlainSerializer, field_validator
+from pydantic import PlainSerializer, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mealie.core.settings.themes import Theme
@@ -439,6 +439,60 @@ class AppSettings(AppLoggingSettings):
     Path to a folder containing custom prompt files;
     files are individually optional, each prompt name will fall back to the default if no custom file exists
     """
+
+    # ===============================================
+    # Storage Configuration
+
+    STORAGE_PROVIDER: str = "local"
+    """Where persistent files (recipe images, assets, avatars, exports, backups) are stored.
+    Options: 'local' (default, the data directory) or 's3' (any S3-compatible object store).
+    The database, logs, secrets, and temporary working files always remain on local disk."""
+
+    STORAGE_S3_BUCKET: str | None = None
+    STORAGE_S3_ENDPOINT_URL: str | None = None
+    """Endpoint for S3-compatible stores (e.g. MinIO, Cloudflare R2); leave unset for AWS S3"""
+    STORAGE_S3_REGION: str | None = None
+    STORAGE_S3_ACCESS_KEY_ID: str | None = None
+    STORAGE_S3_SECRET_ACCESS_KEY: MaskedNoneString = None
+    """When both credentials are unset, boto3's default credential chain is used (e.g. IAM roles)"""
+    STORAGE_S3_PREFIX: str = ""
+    """Optional key prefix so Mealie can share a bucket with other applications"""
+    STORAGE_S3_FORCE_PATH_STYLE: bool = False
+    """Use path-style addressing (bucket in the URL path); required by most MinIO deployments"""
+
+    @field_validator("STORAGE_PROVIDER")
+    @classmethod
+    def validate_storage_provider(cls, v: str) -> str:
+        if v not in {"local", "s3"}:
+            raise ValueError(f"STORAGE_PROVIDER must be 'local' or 's3' (got '{v}')")
+        return v
+
+    @field_validator("STORAGE_S3_ENDPOINT_URL")
+    @classmethod
+    def validate_storage_endpoint_url(cls, v: str | None) -> str | None:
+        """Fail fast at startup if the endpoint URL is set but malformed (e.g. missing the scheme)."""
+        if not v:
+            return v
+
+        parsed = urlparse(v)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                f"STORAGE_S3_ENDPOINT_URL must be a full URL including scheme and host, "
+                f"e.g. 'http://host:port' (got '{v}')"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_storage_settings(self) -> "AppSettings":
+        if self.STORAGE_PROVIDER == "s3" and not self.STORAGE_S3_BUCKET:
+            raise ValueError("STORAGE_S3_BUCKET is required when STORAGE_PROVIDER is 's3'")
+        return self
+
+    @property
+    def STORAGE_FEATURE(self) -> FeatureDetails:
+        if self.STORAGE_PROVIDER != "s3":
+            return FeatureDetails(enabled=False, description="STORAGE_PROVIDER is 'local'")
+        return FeatureDetails(enabled=True, description=None)
 
     # ===============================================
     # Scraper Configuration

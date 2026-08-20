@@ -10,6 +10,7 @@ from mealie.core.settings import (
     AppSettings,
     app_settings_constructor,
 )
+from mealie.pkgs.storage import StorageProvider
 
 CWD = Path(__file__).parent
 BASE_DIR = CWD.parent.parent
@@ -46,3 +47,25 @@ def get_app_settings() -> AppSettings:
 @lru_cache
 def get_logging_settings() -> AppLoggingSettings:
     return AppLoggingSettings(PRODUCTION=PRODUCTION)
+
+
+@lru_cache
+def get_storage() -> StorageProvider:
+    settings = get_app_settings()
+    if settings.STORAGE_PROVIDER == "s3":
+        # imported lazily so local-storage deployments never import boto3
+        from mealie.pkgs.storage.s3 import S3StorageProvider
+
+        return S3StorageProvider(
+            bucket=settings.STORAGE_S3_BUCKET or "",
+            endpoint_url=settings.STORAGE_S3_ENDPOINT_URL,
+            region=settings.STORAGE_S3_REGION,
+            access_key_id=settings.STORAGE_S3_ACCESS_KEY_ID,
+            secret_access_key=settings.STORAGE_S3_SECRET_ACCESS_KEY,
+            prefix=settings.STORAGE_S3_PREFIX,
+            force_path_style=settings.STORAGE_S3_FORCE_PATH_STYLE,
+        )
+
+    from mealie.pkgs.storage.local import LocalStorageProvider
+
+    return LocalStorageProvider(determine_data_dir())
