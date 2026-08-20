@@ -1,9 +1,9 @@
-import shutil
 from functools import cached_property
 
 from fastapi import Depends, File, Form, HTTPException
 from pydantic import UUID4
 
+from mealie.core.config import get_storage
 from mealie.repos.all_repositories import get_repositories
 from mealie.routes._base import BaseCrudController, controller
 from mealie.routes._base.mixins import HttpRepo
@@ -117,11 +117,7 @@ class RecipeTimelineEventsController(BaseCrudController):
     @router.delete("/{item_id}", response_model=RecipeTimelineEventOut)
     def delete_one(self, item_id: UUID4):
         event = self.mixins.delete_one(item_id)
-        if event.image_dir.exists():
-            try:
-                shutil.rmtree(event.image_dir)
-            except FileNotFoundError:
-                pass
+        get_storage().delete_prefix(event.image_prefix)
 
         recipe = self.group_recipes.get_one(event.recipe_id, "id")
         if recipe:
@@ -148,7 +144,7 @@ class RecipeTimelineEventsController(BaseCrudController):
     def update_event_image(self, item_id: UUID4, image: bytes = File(...), extension: str = Form(...)):
         event = self.mixins.get_one(item_id)
         data_service = RecipeDataService(event.recipe_id)
-        data_service.write_image(image, extension, event.image_dir)
+        data_service.write_image(image, extension, image_prefix=event.image_prefix)
 
         if event.image != TimelineEventImage.has_image.value:
             event.image = TimelineEventImage.has_image

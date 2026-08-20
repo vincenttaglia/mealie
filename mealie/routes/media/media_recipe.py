@@ -1,9 +1,11 @@
 from enum import StrEnum
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import UUID4
-from starlette.responses import FileResponse
+from starlette.responses import Response
 
+from mealie.core.config import get_storage
+from mealie.pkgs.storage import StorageFileNotFoundError, safe_key_component, storage_response
 from mealie.schema.recipe import Recipe
 from mealie.schema.recipe.recipe_timeline_events import RecipeTimelineEventOut
 
@@ -17,54 +19,49 @@ class ImageType(StrEnum):
 
 
 @router.get("/{recipe_id}/images/{file_name}")
-async def get_recipe_img(recipe_id: UUID4, file_name: ImageType = ImageType.original):
-    """
-    Takes in a recipe id, returns the static image. This route is proxied in the docker image
-    and should not hit the API in production
-    """
-    recipe_image = Recipe.directory_from_id(recipe_id).joinpath("images", file_name.value)
+async def get_recipe_img(request: Request, recipe_id: UUID4, file_name: ImageType = ImageType.original) -> Response:
+    """Takes in a recipe id, returns the static image"""
+    key = Recipe.image_key_from_id(recipe_id, file_name.value)
 
-    if recipe_image.exists():
-        return FileResponse(recipe_image, media_type="image/webp")
-    else:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        return storage_response(get_storage(), key, media_type="image/webp", request=request)
+    except StorageFileNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND) from e
 
 
 @router.get("/{recipe_id}/images/timeline/{timeline_event_id}/{file_name}")
 async def get_recipe_timeline_event_img(
-    recipe_id: UUID4, timeline_event_id: UUID4, file_name: ImageType = ImageType.original
-):
-    """
-    Takes in a recipe id and event timeline id, returns the static image. This route is proxied in the docker image
-    and should not hit the API in production
-    """
-    timeline_event_image = RecipeTimelineEventOut.image_dir_from_id(recipe_id, timeline_event_id).joinpath(
-        file_name.value
-    )
+    request: Request, recipe_id: UUID4, timeline_event_id: UUID4, file_name: ImageType = ImageType.original
+) -> Response:
+    """Takes in a recipe id and event timeline id, returns the static image"""
+    key = RecipeTimelineEventOut.image_key_from_id(recipe_id, timeline_event_id, file_name.value)
 
-    if timeline_event_image.exists():
-        return FileResponse(timeline_event_image, media_type="image/webp")
-    else:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        return storage_response(get_storage(), key, media_type="image/webp", request=request)
+    except StorageFileNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND) from e
 
 
 @router.get("/{recipe_id}/assets/{file_name}")
-async def get_recipe_asset(recipe_id: UUID4, file_name: str):
+async def get_recipe_asset(request: Request, recipe_id: UUID4, file_name: str) -> Response:
     """Returns a recipe asset"""
-    asset_dir = Recipe.directory_from_id(recipe_id).joinpath("assets")
-    file = asset_dir.joinpath(file_name).resolve()
+    try:
+        safe_key_component(file_name)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST) from e
 
-    if not file.is_relative_to(asset_dir.resolve()):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+    key = Recipe.asset_key_from_id(recipe_id, file_name)
 
-    if file.exists():
+    try:
         # Force download and disable MIME sniffing so uploaded assets cannot be
         # served as active content in Mealie's origin.
-        return FileResponse(
-            file,
-            filename=file.name,
-            content_disposition_type="attachment",
+        return storage_response(
+            get_storage(),
+            key,
+            filename=file_name,
+            attachment=True,
             headers={"X-Content-Type-Options": "nosniff"},
+            request=request,
         )
-    else:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    except StorageFileNotFoundError as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND) from e

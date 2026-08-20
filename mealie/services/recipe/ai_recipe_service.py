@@ -59,8 +59,7 @@ class AIRecipeService(RecipeService):
 
             recipe = self.create_one(recipe_data)
             if local_images:
-                with open(local_images[0], "rb") as f:
-                    RecipeDataService(recipe.id).write_image(f.read(), "webp")
+                RecipeDataService(recipe.id).write_image(local_images[0], "webp")
 
             return recipe
 

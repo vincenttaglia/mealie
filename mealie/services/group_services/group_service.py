@@ -1,6 +1,6 @@
 from pydantic import UUID4
 
-from mealie.core.config import get_app_settings
+from mealie.core.config import get_app_settings, get_storage
 from mealie.pkgs.stats import fs_stats
 from mealie.repos.all_repositories import get_repositories
 from mealie.repos.repository_factory import AllRepositories
@@ -8,6 +8,7 @@ from mealie.schema.group.group_preferences import CreateGroupPreferences
 from mealie.schema.group.group_statistics import GroupStorage
 from mealie.schema.household.household import HouseholdCreate
 from mealie.schema.household.household_preferences import CreateHouseholdPreferences
+from mealie.schema.recipe.recipe import Recipe
 from mealie.schema.user.user import GroupBase
 from mealie.services._base_service import BaseService
 from mealie.services.household_services.household_service import HouseholdService
@@ -67,8 +68,7 @@ class GroupService(BaseService):
 
         all_ids = group_repos.recipes.all_ids(target_id)
 
-        used_size = sum(
-            fs_stats.get_dir_size(f"{self.directories.RECIPE_DATA_DIR}/{recipe_id!s}") for recipe_id in all_ids
-        )
+        storage = get_storage()
+        used_size = sum(storage.size_of_prefix(Recipe.storage_prefix_from_id(recipe_id)) for recipe_id in all_ids)
 
         return GroupStorage.bytes(used_size, ALLOWED_SIZE)

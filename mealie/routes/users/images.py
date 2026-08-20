@@ -4,6 +4,7 @@ from uuid import uuid4
 from fastapi import File, HTTPException, UploadFile, status
 from pydantic import UUID4
 
+from mealie.core.config import get_storage
 from mealie.core.dependencies import get_temporary_path
 from mealie.pkgs import cache, img
 from mealie.routes._base import BaseUserController, controller
@@ -23,6 +24,9 @@ class UserImageController(BaseUserController):
         profile: UploadFile = File(...),
     ):
         """Updates a User Image"""
+        storage = get_storage()
+        image_key = f"{PrivateUser.storage_prefix(id)}profile.webp"
+
         with get_temporary_path() as temp_path:
             assert_user_change_allowed(id, self.user, self.user)
 
@@ -34,11 +38,9 @@ class UserImageController(BaseUserController):
                 shutil.copyfileobj(profile.file, buffer)
 
             image = img.PillowMinifier.to_webp(temp_img)
-            dest = PrivateUser.get_directory(id) / "profile.webp"
-
-            shutil.copyfile(image, dest)
+            storage.write_file(image_key, image, content_type="image/webp")
 
         self.repos.users.patch(id, {"cache_key": cache.new_key()})
 
-        if not dest.is_file():
+        if not storage.exists(image_key):
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)

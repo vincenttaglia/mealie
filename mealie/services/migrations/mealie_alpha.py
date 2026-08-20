@@ -1,9 +1,10 @@
 import contextlib
-import shutil
+import mimetypes
 import tempfile
 import zipfile
 from pathlib import Path
 
+from mealie.core.config import get_storage
 from mealie.schema.recipe.recipe import Recipe
 from mealie.schema.reports.reports import ReportEntryCreate
 
@@ -89,20 +90,29 @@ class MealieAlphaMigrator(BaseMigrator):
                         )
                     )
 
+            storage = get_storage()
             results = self.import_recipes_to_database(recipes)
             for slug, recipe_id, status in results:
                 if not status:
                     continue
 
-                dest_dir = Recipe.directory_from_id(recipe_id)
+                dest_prefix = Recipe.storage_prefix_from_id(recipe_id)
                 source_dir = recipe_lookup.get(slug)
 
-                if dest_dir.exists():
-                    shutil.rmtree(dest_dir)
+                storage.delete_prefix(dest_prefix)
 
                 if source_dir is None:
                     continue
 
                 for dir in source_dir.iterdir():
-                    if dir.is_dir():
-                        shutil.copytree(dir, dest_dir / dir.name)
+                    if not dir.is_dir():
+                        continue
+                    for file in sorted(dir.rglob("*")):
+                        if not file.is_file():
+                            continue
+                        content_type, _ = mimetypes.guess_type(file.name)
+                        storage.write_file(
+                            dest_prefix + file.relative_to(source_dir).as_posix(),
+                            file,
+                            content_type=content_type,
+                        )

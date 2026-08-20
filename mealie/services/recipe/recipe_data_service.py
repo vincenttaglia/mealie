@@ -2,9 +2,12 @@ import asyncio
 import shutil
 from logging import Logger
 from pathlib import Path
+from typing import BinaryIO
 
 from pydantic import UUID4
 
+from mealie.core.config import get_storage
+from mealie.core.dependencies.dependencies import get_temporary_path
 from mealie.pkgs import img, safehttp
 from mealie.schema.recipe.recipe import Recipe
 from mealie.schema.recipe.recipe_image_types import RecipeImageTypes
@@ -67,54 +70,51 @@ class RecipeDataService(BaseService):
         self.recipe_id = recipe_id
         self.logger = logger or self.logger
         self.minifier = img.PillowMinifier(purge=True, logger=self.logger)
+        self.storage = get_storage()
 
-        self.dir_data = Recipe.directory_from_id(self.recipe_id)
+        self.dir_data = self.directories.RECIPE_DATA_DIR.joinpath(str(self.recipe_id))
         self.dir_image = self.dir_data.joinpath("images")
         self.dir_image_timeline = self.dir_image.joinpath("timeline")
         self.dir_assets = self.dir_data.joinpath("assets")
 
-        for dir in [self.dir_image, self.dir_image_timeline, self.dir_assets]:
-            dir.mkdir(parents=True, exist_ok=True)
-
     def delete_all_data(self) -> None:
         try:
-            shutil.rmtree(self.dir_data)
+            self.storage.delete_prefix(Recipe.storage_prefix_from_id(self.recipe_id))
         except Exception as e:
             self.logger.exception(f"Failed to delete recipe data: {e}")
 
-    def write_image(self, file_data: bytes | Path, extension: str, image_dir: Path | None = None) -> Path:
-        if not image_dir:
-            image_dir = self.dir_image
+    def write_image(self, file_data: bytes | Path | BinaryIO, extension: str, image_prefix: str | None = None) -> str:
+        if not image_prefix:
+            image_prefix = Recipe.image_prefix_from_id(self.recipe_id)
 
         extension = extension.replace(".", "")
-        image_path = image_dir.joinpath(f"original.{extension}")
-        image_path.unlink(missing_ok=True)
 
-        if isinstance(file_data, Path):
-            shutil.copy2(file_data, image_path)
-        elif isinstance(file_data, bytes):
-            with open(image_path, "ab") as f:
-                f.write(file_data)
-        else:
-            with open(image_path, "ab") as f:
-                shutil.copyfileobj(file_data, f)
+        with get_temporary_path() as temp_dir:
+            image_path = temp_dir.joinpath(f"original.{extension}")
 
-        try:
+            if isinstance(file_data, Path):
+                shutil.copy2(file_data, image_path)
+            elif isinstance(file_data, bytes):
+                image_path.write_bytes(file_data)
+            else:
+                with image_path.open("wb") as f:
+                    shutil.copyfileobj(file_data, f)
+
             self.minifier.minify(image_path)
-        except Exception:
-            # Remove the partially-written file so corrupt images don't persist on disk.
-            image_path.unlink(missing_ok=True)
-            raise
 
-        return image_path
+            for image_type in RecipeImageTypes:
+                minified_path = temp_dir.joinpath(image_type.value)
+                if minified_path.is_file():
+                    self.storage.write_file(image_prefix + image_type.value, minified_path, content_type="image/webp")
 
-    def delete_image(self, image_dir: Path | None = None):
-        if not image_dir:
-            image_dir = self.dir_image
+        return image_prefix + RecipeImageTypes.original.value
+
+    def delete_image(self, image_prefix: str | None = None) -> None:
+        if not image_prefix:
+            image_prefix = Recipe.image_prefix_from_id(self.recipe_id)
 
         for img_type in RecipeImageTypes:
-            image_path = image_dir.joinpath(img_type.value)
-            image_path.unlink(missing_ok=True)
+            self.storage.delete(image_prefix + img_type.value)
 
     async def scrape_image(self, image_url: str | dict[str, str] | list[str]) -> None:
         self.logger.info(f"Image URL: {image_url}")
@@ -143,9 +143,6 @@ class RecipeDataService(BaseService):
         if ext not in img.IMAGE_EXTENSIONS:
             ext = "jpg"  # Guess the extension
 
-        file_name = f"{self.recipe_id!s}.{ext}"
-        file_path = Recipe.directory_from_id(self.recipe_id).joinpath("images", file_name)
-
         try:
             # FlareSolverr returns HTML, not image bytes, so it can't serve an image download.
             r = await safehttp.resilient_fetch(image_url_str, allow_flaresolverr=False)
@@ -163,6 +160,4 @@ class RecipeDataService(BaseService):
             self.logger.error(f"Content-Type: {content_type} is not an image")
             raise NotAnImageError(f"Content-Type {content_type} is not an image")
 
-        self.logger.debug(f"File Name Suffix {file_path.suffix}")
-        self.write_image(r.content, file_path.suffix)
-        file_path.unlink(missing_ok=True)
+        self.write_image(r.content, ext)

@@ -2,6 +2,7 @@ import enum
 from pathlib import Path
 from zipfile import ZipFile
 
+from mealie.core.config import get_storage
 from mealie.schema.recipe import Recipe
 from mealie.schema.recipe.recipe_image_types import RecipeImageTypes
 from mealie.services._base_service import BaseService
@@ -92,17 +93,19 @@ class TemplateService(BaseService):
     def _render_zip(self, recipe: Recipe) -> Path:
         self.__check_temp(self._render_zip)
 
-        image_asset = recipe.image_dir.joinpath(RecipeImageTypes.original.value)
-
         if self.temp is None:
             raise ValueError("Temporary directory must be provided for method _render_zip")
 
         zip_temp = self.temp.joinpath(f"{recipe.slug}.zip")
 
+        storage = get_storage()
+
         with ZipFile(zip_temp, "w") as myzip:
             myzip.writestr(f"{recipe.slug}.json", recipe.model_dump_json())
 
-            if image_asset.is_file():
-                myzip.write(image_asset, arcname=image_asset.name)
+            if recipe.id:
+                image_key = Recipe.image_key_from_id(recipe.id, RecipeImageTypes.original.value)
+                if storage.exists(image_key):
+                    myzip.writestr(RecipeImageTypes.original.value, storage.read_bytes(image_key))
 
         return zip_temp

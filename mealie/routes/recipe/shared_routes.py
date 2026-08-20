@@ -6,6 +6,7 @@ from sqlalchemy.orm.session import Session
 from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 
+from mealie.core.config import get_storage
 from mealie.core.dependencies import get_temporary_zip_path
 from mealie.core.root_logger import get_logger
 from mealie.db.db_setup import generate_session
@@ -44,14 +45,16 @@ def get_shared_recipe_as_zip(token_id: UUID4, session: Session = Depends(generat
     """Get a recipe and its original image as a Zip file"""
 
     recipe = get_shared_recipe(token_id=token_id, session=session)
-    image_asset = recipe.image_dir.joinpath(RecipeImageTypes.original.value)
+    storage = get_storage()
 
     with get_temporary_zip_path(auto_unlink=False) as temp_path:
         with ZipFile(temp_path, "w") as myzip:
             myzip.writestr(f"{recipe.slug}.json", recipe.model_dump_json())
 
-            if image_asset.is_file():
-                myzip.write(image_asset, arcname=image_asset.name)
+            if recipe.id:
+                image_key = Recipe.image_key_from_id(recipe.id, RecipeImageTypes.original.value)
+                if storage.exists(image_key):
+                    myzip.writestr(RecipeImageTypes.original.value, storage.read_bytes(image_key))
 
         return FileResponse(
             temp_path, filename=f"{recipe.slug}.zip", background=BackgroundTask(temp_path.unlink, missing_ok=True)

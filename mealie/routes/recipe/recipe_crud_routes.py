@@ -1,7 +1,6 @@
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterable, Awaitable, Callable
-from shutil import copyfileobj
 from typing import Annotated
 from uuid import UUID
 
@@ -25,10 +24,12 @@ from pydantic import UUID4
 from slugify import slugify
 
 from mealie.core import exceptions
+from mealie.core.config import get_storage
 from mealie.core.dependencies import (
     get_temporary_zip_path,
 )
 from mealie.pkgs import cache
+from mealie.pkgs.storage import safe_key_component
 from mealie.repos.all_repositories import get_repositories
 from mealie.routes._base import controller
 from mealie.routes._base.routers import MealieCrudRoute, UserAPIRouter
@@ -817,23 +818,26 @@ class RecipeController(BaseRecipeController):
             raise HTTPException(status_code=400, detail="Missing required fields")
 
         file_name = f"{file_slug}.{extension}"
-        asset_in = RecipeAsset(name=name, icon=icon, file_name=file_name)
 
-        recipe = self.service.get_one(slug)
-
-        dest = recipe.asset_dir / file_name
-
-        # Ensure path is relative to the recipe's asset directory
-        if dest.absolute().parent != recipe.asset_dir:
+        try:
+            safe_key_component(file_name)
+        except ValueError as e:
             raise HTTPException(
                 status_code=400,
                 detail=f"File name {file_name} or extension {extension} not valid",
-            )
+            ) from e
 
-        with dest.open("wb") as buffer:
-            copyfileobj(file.file, buffer)
+        asset_in = RecipeAsset(name=name, icon=icon, file_name=file_name)
 
-        if not dest.is_file():
+        recipe = self.service.get_one(slug)
+        if not recipe.id:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        storage = get_storage()
+        asset_key = Recipe.asset_key_from_id(recipe.id, file_name)
+        storage.write_stream(asset_key, file.file)
+
+        if not storage.exists(asset_key):
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         if recipe.assets is not None:

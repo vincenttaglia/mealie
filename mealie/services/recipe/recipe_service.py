@@ -2,7 +2,6 @@ import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from shutil import copytree, rmtree
 from textwrap import dedent
 from typing import Any
 from uuid import UUID, uuid4
@@ -12,6 +11,7 @@ import sqlalchemy as sa
 from fastapi import UploadFile
 
 from mealie.core import exceptions
+from mealie.core.config import get_storage
 from mealie.lang.providers import Translator
 from mealie.pkgs import cache
 from mealie.repos.all_repositories import get_repositories
@@ -129,29 +129,33 @@ class RecipeService(RecipeServiceBase):
 
     def check_assets(self, recipe: Recipe, original_slug: str) -> None:
         """Checks if the recipe slug has changed, and if so moves the assets to a new file with the new slug."""
-        if original_slug != recipe.slug:
-            current_dir = self.directories.RECIPE_DATA_DIR.joinpath(original_slug)
+        if recipe.id is None:
+            raise ValueError("Recipe has no ID")
 
-            try:
-                copytree(current_dir, recipe.directory, dirs_exist_ok=True)
-                self.logger.debug(f"Renaming Recipe Directory: {original_slug} -> {recipe.slug}")
-            except FileNotFoundError:
-                self.logger.error(f"Recipe Directory not Found: {original_slug}")
+        storage = get_storage()
+
+        if original_slug != recipe.slug:
+            storage.copy_prefix(f"recipes/{original_slug}/", Recipe.storage_prefix_from_id(recipe.id))
+            self.logger.debug(f"Renaming Recipe Directory: {original_slug} -> {recipe.slug}")
 
         if recipe.assets is None:
             recipe.assets = []
 
         all_asset_files = [x.file_name for x in recipe.assets]
 
-        for file in recipe.asset_dir.iterdir():
-            if file.is_dir():
+        asset_prefix = Recipe.asset_prefix_from_id(recipe.id)
+        for entry in storage.iter_entries(asset_prefix):
+            file_name = entry.key.removeprefix(asset_prefix)
+            if "/" in file_name:
                 continue
-            if file.name not in all_asset_files:
-                file.unlink()
+            if file_name not in all_asset_files:
+                storage.delete(entry.key)
 
     def delete_assets(self, recipe: Recipe) -> None:
-        recipe_dir = recipe.directory
-        rmtree(recipe_dir, ignore_errors=True)
+        if recipe.id is None:
+            raise ValueError("Recipe has no ID")
+
+        get_storage().delete_prefix(Recipe.storage_prefix_from_id(recipe.id))
         self.logger.info(f"Recipe Directory Removed: {recipe.slug}")
 
     def _recipe_creation_factory(self, name: str, additional_attrs: dict | None = None) -> Recipe:
@@ -370,13 +374,11 @@ class RecipeService(RecipeServiceBase):
         # Copy all assets (including images) to the new recipe directory
         # This assures that replaced links in recipe steps continue to work when the old recipe is deleted
         try:
-            new_service = RecipeDataService(new_recipe.id)
-            old_service = RecipeDataService(old_recipe.id)
-            copytree(
-                old_service.dir_data,
-                new_service.dir_data,
-                dirs_exist_ok=True,
-            )
+            if old_recipe.id and new_recipe.id:
+                get_storage().copy_prefix(
+                    Recipe.storage_prefix_from_id(old_recipe.id),
+                    Recipe.storage_prefix_from_id(new_recipe.id),
+                )
         except Exception as e:
             self.logger.error(f"Failed to copy assets from {old_recipe.slug} to {new_recipe.slug}: {e}")
 

@@ -1,11 +1,10 @@
 import random
-import shutil
 
 from pydantic import UUID4
 from sqlalchemy import select
 
 from mealie.assets import users as users_assets
-from mealie.core.config import get_app_settings
+from mealie.core.config import get_app_settings, get_storage
 from mealie.db.models.users.user_to_recipe import UserToRecipe
 from mealie.schema.user.user import PrivateUser, UserRatingOut
 
@@ -39,7 +38,9 @@ class RepositoryUsers(GroupRepositoryGeneric[PrivateUser, User]):
             users_assets.img_random_3,
         ]
         random_image = random.choice(all_images)
-        shutil.copy(random_image, new_user.directory() / "profile.webp")
+        get_storage().write_file(
+            f"{PrivateUser.storage_prefix(new_user.id)}profile.webp", random_image, content_type="image/webp"
+        )
 
         return new_user
 
@@ -60,8 +61,8 @@ class RepositoryUsers(GroupRepositoryGeneric[PrivateUser, User]):
                 return user_to_delete
 
         entry = super().delete(value, match_key)
-        # Delete the user's directory
-        shutil.rmtree(PrivateUser.get_directory(value))
+        # Delete the user's files
+        get_storage().delete_prefix(PrivateUser.storage_prefix(value))
         return entry
 
     def get_by_username(self, username: str) -> PrivateUser | None:
