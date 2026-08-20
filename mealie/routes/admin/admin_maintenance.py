@@ -1,10 +1,12 @@
 import shutil
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, HTTPException
 
+from mealie.core.config import get_storage
 from mealie.pkgs.stats import fs_stats
+from mealie.pkgs.storage import StorageProvider
 from mealie.routes._base import BaseAdminController, controller
 from mealie.schema.admin import MaintenanceSummary
 from mealie.schema.admin.maintenance import MaintenanceStorageDetails
@@ -13,41 +15,42 @@ from mealie.schema.response import ErrorResponse, SuccessResponse
 router = APIRouter(prefix="/maintenance")
 
 
-def clean_images(root_dir: Path, dry_run: bool) -> int:
+def clean_images(storage: StorageProvider, dry_run: bool) -> int:
     cleaned_images = 0
 
-    for recipe_dir in root_dir.iterdir():
-        image_dir = recipe_dir.joinpath("images")
-
-        if not image_dir.exists():
+    for entry in storage.iter_entries("recipes/"):
+        parts = entry.key.split("/")
+        if len(parts) != 4 or parts[2] != "images":
             continue
 
-        for image in image_dir.iterdir():
-            if image.is_dir():
-                continue
+        if PurePosixPath(entry.key).suffix != ".webp":
+            if not dry_run:
+                storage.delete(entry.key)
 
-            if image.suffix != ".webp":
-                if not dry_run:
-                    image.unlink()
-
-                cleaned_images += 1
+            cleaned_images += 1
 
     return cleaned_images
 
 
-def clean_recipe_folders(root_dir: Path, dry_run: bool) -> int:
+def clean_recipe_folders(storage: StorageProvider, dry_run: bool) -> int:
+    folders: set[str] = set()
+
+    for entry in storage.iter_entries("recipes/"):
+        relative_key = entry.key.removeprefix("recipes/")
+        if "/" in relative_key:
+            folders.add(relative_key.split("/", 1)[0])
+
     cleaned_dirs = 0
 
-    for recipe_dir in root_dir.iterdir():
-        if recipe_dir.is_dir():
-            # Attempt to convert the folder name to a UUID
-            try:
-                uuid.UUID(recipe_dir.name)
-                continue
-            except ValueError:
-                if not dry_run:
-                    shutil.rmtree(recipe_dir)
-                cleaned_dirs += 1
+    for folder in folders:
+        # Attempt to convert the folder name to a UUID
+        try:
+            uuid.UUID(folder)
+            continue
+        except ValueError:
+            if not dry_run:
+                storage.delete_prefix(f"recipes/{folder}/")
+            cleaned_dirs += 1
 
     return cleaned_dirs
 
@@ -69,21 +72,28 @@ class AdminMaintenanceController(BaseAdminController):
         """
         Get the maintenance summary
         """
+        storage = get_storage()
+
+        data_dir_size = fs_stats.get_dir_size(self.folders.DATA_DIR)
+        if storage.get_local_path("") is None:
+            data_dir_size += storage.size_of_prefix("")
 
         return MaintenanceSummary(
-            data_dir_size=fs_stats.pretty_size(fs_stats.get_dir_size(self.folders.DATA_DIR)),
-            cleanable_images=clean_images(self.folders.RECIPE_DATA_DIR, dry_run=True),
-            cleanable_dirs=clean_recipe_folders(self.folders.RECIPE_DATA_DIR, dry_run=True),
+            data_dir_size=fs_stats.pretty_size(data_dir_size),
+            cleanable_images=clean_images(storage, dry_run=True),
+            cleanable_dirs=clean_recipe_folders(storage, dry_run=True),
         )
 
     @router.get("/storage", response_model=MaintenanceStorageDetails)
     def get_storage_details(self):
+        storage = get_storage()
+
         return MaintenanceStorageDetails(
             temp_dir_size=fs_stats.pretty_size(fs_stats.get_dir_size(self.folders.TEMP_DIR)),
-            backups_dir_size=fs_stats.pretty_size(fs_stats.get_dir_size(self.folders.BACKUP_DIR)),
-            groups_dir_size=fs_stats.pretty_size(fs_stats.get_dir_size(self.folders.GROUPS_DIR)),
-            recipes_dir_size=fs_stats.pretty_size(fs_stats.get_dir_size(self.folders.RECIPE_DATA_DIR)),
-            user_dir_size=fs_stats.pretty_size(fs_stats.get_dir_size(self.folders.USER_DIR)),
+            backups_dir_size=fs_stats.pretty_size(storage.size_of_prefix("backups/")),
+            groups_dir_size=fs_stats.pretty_size(storage.size_of_prefix("groups/")),
+            recipes_dir_size=fs_stats.pretty_size(storage.size_of_prefix("recipes/")),
+            user_dir_size=fs_stats.pretty_size(storage.size_of_prefix("users/")),
         )
 
     @router.post("/clean/images", response_model=SuccessResponse)
@@ -92,7 +102,7 @@ class AdminMaintenanceController(BaseAdminController):
         Purges all the images from the filesystem that aren't .webp
         """
         try:
-            cleaned_images = clean_images(self.folders.RECIPE_DATA_DIR, dry_run=False)
+            cleaned_images = clean_images(get_storage(), dry_run=False)
             return SuccessResponse.respond(f"{cleaned_images} Images cleaned")
         except Exception as e:
             raise HTTPException(status_code=500, detail=ErrorResponse.respond("Failed to clean images")) from e
@@ -115,7 +125,7 @@ class AdminMaintenanceController(BaseAdminController):
         Deletes all the recipe folders that don't have names that are valid UUIDs
         """
         try:
-            cleaned_dirs = clean_recipe_folders(self.folders.RECIPE_DATA_DIR, dry_run=False)
+            cleaned_dirs = clean_recipe_folders(get_storage(), dry_run=False)
             return SuccessResponse.respond(f"{cleaned_dirs} Recipe folders removed")
         except Exception as e:
             raise HTTPException(status_code=500, detail=ErrorResponse.respond("Failed to clean directories")) from e

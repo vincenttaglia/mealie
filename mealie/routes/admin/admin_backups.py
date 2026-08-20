@@ -1,13 +1,14 @@
+import datetime
 import operator
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
-from mealie.core.config import get_app_dirs
+from mealie.core.config import get_storage
 from mealie.core.root_logger import get_logger
 from mealie.core.security import create_file_token
 from mealie.pkgs.stats.fs_stats import pretty_size
+from mealie.pkgs.storage import safe_key_component
 from mealie.routes._base import BaseAdminController, controller
 from mealie.schema.admin.backup import AllBackups, BackupFile
 from mealie.schema.response.responses import ErrorResponse, FileTokenResponse, SuccessResponse
@@ -19,24 +20,33 @@ router = APIRouter(prefix="/backups")
 
 @controller(router)
 class AdminBackupController(BaseAdminController):
-    def _backup_path(self, name: str) -> Path:
-        backup_dir = get_app_dirs().BACKUP_DIR
-        candidate = (backup_dir / name).resolve()
-        if not candidate.is_relative_to(backup_dir.resolve()):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST)
-        return candidate
+    def _backup_key(self, file_name: str) -> str:
+        try:
+            return f"backups/{safe_key_component(file_name)}"
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST) from e
 
     @router.get("", response_model=AllBackups)
     def get_all(self):
-        app_dirs = get_app_dirs()
-        imports = []
-        for archive in app_dirs.BACKUP_DIR.glob("*.zip"):
-            backup = BackupFile(
-                name=archive.name, date=archive.stat().st_mtime, size=pretty_size(archive.stat().st_size)
-            )
-            imports.append(backup)
+        storage = get_storage()
 
-        templates = [template.name for template in app_dirs.TEMPLATE_DIR.glob("*.*")]
+        imports = []
+        for entry in storage.iter_entries("backups/"):
+            name = entry.key.removeprefix("backups/")
+            if "/" in name or not name.endswith(".zip"):
+                continue
+
+            date = entry.modified or datetime.datetime.fromtimestamp(0, datetime.UTC)
+            imports.append(BackupFile(name=name, date=date, size=pretty_size(entry.size)))
+
+        templates = []
+        for entry in storage.iter_entries("templates/"):
+            name = entry.key.removeprefix("templates/")
+            if "/" in name or "." not in name:
+                continue
+
+            templates.append(name)
+
         imports.sort(key=operator.attrgetter("date"), reverse=True)
 
         return AllBackups(imports=imports, templates=templates)
@@ -56,21 +66,22 @@ class AdminBackupController(BaseAdminController):
     @router.get("/{file_name}", response_model=FileTokenResponse)
     def get_one(self, file_name: str):
         """Returns a token to download a file"""
-        file = self._backup_path(file_name)
+        key = self._backup_key(file_name)
 
-        if not file.exists():
+        if not get_storage().exists(key):
             raise HTTPException(status.HTTP_404_NOT_FOUND)
 
-        return FileTokenResponse.respond(create_file_token(file))
+        return FileTokenResponse.respond(create_file_token(key))
 
     @router.delete("/{file_name}", status_code=status.HTTP_200_OK, response_model=SuccessResponse)
     def delete_one(self, file_name: str):
-        file = self._backup_path(file_name)
+        key = self._backup_key(file_name)
+        storage = get_storage()
 
-        if not file.is_file():
+        if not storage.exists(key):
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
         try:
-            file.unlink()
+            storage.delete(key)
         except Exception as e:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR) from e
 
@@ -79,24 +90,19 @@ class AdminBackupController(BaseAdminController):
     @router.post("/upload", response_model=SuccessResponse)
     def upload_one(self, archive: UploadFile = File(...)):
         """Upload a .zip File to later be imported into Mealie"""
-        if "." not in archive.filename:
+        if not archive.filename or "." not in archive.filename:
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
         if archive.filename.split(".")[-1] != "zip":
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
         name = Path(archive.filename).stem
+        key = self._backup_key(f"{name}.zip")
 
-        app_dirs = get_app_dirs()
-        dest = app_dirs.BACKUP_DIR.joinpath(f"{name}.zip")
+        storage = get_storage()
+        storage.write_stream(key, archive.file, content_type="application/zip")
 
-        if dest.resolve().parent != app_dirs.BACKUP_DIR.resolve():
-            raise HTTPException(status.HTTP_400_BAD_REQUEST)
-
-        with dest.open("wb") as buffer:
-            shutil.copyfileobj(archive.file, buffer)
-
-        if not dest.is_file():
+        if not storage.exists(key):
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
         return SuccessResponse.respond("Upload successful")
 
@@ -104,10 +110,13 @@ class AdminBackupController(BaseAdminController):
     def import_one(self, file_name: str):
         backup = BackupV2()
 
-        file = self._backup_path(file_name)
+        try:
+            file_name = safe_key_component(file_name)
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST) from e
 
         try:
-            backup.restore(file)
+            backup.restore_from_storage(file_name)
         except BackupSchemaMismatch as e:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
