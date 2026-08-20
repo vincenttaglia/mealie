@@ -44,6 +44,81 @@
  | POSTGRES_DB<super>[&dagger;][secrets]</super>           |  mealie  | Postgres database name                                                                                                                                                                                                           |
  | POSTGRES_URL_OVERRIDE<super>[&dagger;][secrets]</super> |   None   | Optional Postgres URL override to use instead of POSTGRES\_\* variables                                                                                                                                                          |
 
+### Object Storage (S3)
+
+By default, Mealie stores all of its files (recipe images, assets, user avatars, exports, and backups) on the
+local filesystem in the data directory. Setting `STORAGE_PROVIDER=s3` stores those files in any S3-compatible
+object store instead (AWS S3, MinIO, Cloudflare R2, Garage, ...).
+
+| Variables                    | Default | Description                                                                                                                                              |
+| ---------------------------- | :-----: | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| STORAGE_PROVIDER             |  local  | Where persistent files are stored. Options: 'local' (the data directory) or 's3' (any S3-compatible object store)                                       |
+| STORAGE_S3_BUCKET            |  None   | Name of the bucket to store files in. Required when `STORAGE_PROVIDER` is 's3'                                                                           |
+| STORAGE_S3_ENDPOINT_URL      |  None   | Full endpoint URL including scheme for S3-compatible stores (e.g. `http://minio:9000`). Leave unset for AWS S3                                           |
+| STORAGE_S3_REGION            |  None   | Region of the bucket (e.g. `us-east-1`). Some providers (e.g. Cloudflare R2) accept `auto`                                                               |
+| STORAGE_S3_ACCESS_KEY_ID     |  None   | Access key id for the bucket. When both credentials are unset, boto3's default credential chain is used (environment, shared config, IAM/task roles)    |
+| STORAGE_S3_SECRET_ACCESS_KEY |  None   | Secret access key for the bucket                                                                                                                         |
+| STORAGE_S3_PREFIX            |  `""`   | Optional key prefix prepended to every object (e.g. `mealie`), so Mealie can share a bucket with other applications                                      |
+| STORAGE_S3_FORCE_PATH_STYLE  |  False  | Use path-style addressing (the bucket name in the URL path instead of the hostname). Required by most MinIO deployments                                  |
+
+!!! warning "A local volume is still required"
+    Object storage only holds Mealie's media and backup files. The database (SQLite), logs, secrets, and
+    temporary working files always remain on local disk, so keep your data directory volume mounted even
+    when S3 storage is enabled.
+
+When S3 storage is enabled, media files are streamed through the Mealie API rather than served directly
+from disk, so the object store does not need to be publicly accessible — only the Mealie server needs to
+reach it.
+
+Example configuration for a self-hosted MinIO instance:
+
+```yaml
+environment:
+  STORAGE_PROVIDER: s3
+  STORAGE_S3_BUCKET: mealie
+  STORAGE_S3_ENDPOINT_URL: http://minio:9000
+  STORAGE_S3_ACCESS_KEY_ID: my-access-key
+  STORAGE_S3_SECRET_ACCESS_KEY: my-secret-key
+  STORAGE_S3_FORCE_PATH_STYLE: "true"
+```
+
+Example configuration for Cloudflare R2:
+
+```yaml
+environment:
+  STORAGE_PROVIDER: s3
+  STORAGE_S3_BUCKET: mealie
+  STORAGE_S3_ENDPOINT_URL: https://<account-id>.r2.cloudflarestorage.com
+  STORAGE_S3_REGION: auto
+  STORAGE_S3_ACCESS_KEY_ID: my-access-key
+  STORAGE_S3_SECRET_ACCESS_KEY: my-secret-key
+```
+
+#### Migrating an existing install to S3
+
+Mealie ships with a script that copies your existing local files into the configured bucket. The script
+is idempotent — files that already exist in the bucket with the same size are skipped — so it is safe to
+re-run if it is interrupted.
+
+1. Stop Mealie (or at least stop making changes) so no new files are written during the migration.
+2. Set the `STORAGE_PROVIDER` and `STORAGE_S3_*` environment variables described above and recreate the container.
+3. Run the migration script inside the container. Pass `--dry-run` first to see what would be uploaded:
+
+    ```shell
+    docker exec -it mealie bash
+
+    python /opt/mealie/lib64/python3.12/site-packages/mealie/scripts/migrate_storage.py --dry-run
+    python /opt/mealie/lib64/python3.12/site-packages/mealie/scripts/migrate_storage.py
+    ```
+
+4. Restart Mealie and verify that recipe images load, then optionally clean up the migrated files from the
+   local data directory (keep the database, `.secret` files, and logs!).
+
+For very large libraries you may prefer to copy the data directory into the bucket with a purpose-built
+tool such as [rclone](https://rclone.org/) (`rclone sync`) before setting the environment variables —
+just be sure to exclude the local-only files mentioned above (`mealie.db*`, `*.log*`, `.secret*`, and the
+`.temp/` directory).
+
 ### Email
 
 | Variables                                       | Default | Description                                       |

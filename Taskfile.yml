@@ -81,7 +81,7 @@ tasks:
       - task: py:format
 
   dev:services:
-    desc: starts postgres and mailpit containers
+    desc: starts postgres, mailpit, and minio containers
     dir: docker
     cmds:
       - docker compose -f docker-compose.dev.yml up
@@ -107,6 +107,18 @@ tasks:
 
   py:test:
     desc: runs python tests (support args after '--')
+    cmds:
+      - uv run pytest {{ .CLI_ARGS }}
+
+  py:test:s3:
+    desc: runs python tests against MinIO object storage (requires `task dev:services` running; support args after '--')
+    env:
+      STORAGE_PROVIDER: s3
+      STORAGE_S3_BUCKET: mealie
+      STORAGE_S3_ENDPOINT_URL: http://localhost:9002
+      STORAGE_S3_ACCESS_KEY_ID: mealie
+      STORAGE_S3_SECRET_ACCESS_KEY: mealie123
+      STORAGE_S3_FORCE_PATH_STYLE: "true"
     cmds:
       - uv run pytest {{ .CLI_ARGS }}
 
