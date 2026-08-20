@@ -168,8 +168,13 @@ class AppSettings(AppLoggingSettings):
         # Certain browsers (webkit) have issues with very long-lived cookies, so we limit to 400 days
         return min(v, 400 * 24)
 
-    SECRET: str
-    SESSION_SECRET: str
+    SECRET: str = ""
+    """Signing secret for auth/file tokens. When unset, a secret is generated and persisted to
+    `<data_dir>/.secret`; set it explicitly (e.g. for stateless deployments with ephemeral local
+    storage, or multiple replicas) so tokens survive restarts and match across instances."""
+
+    SESSION_SECRET: str = ""
+    """Signing secret for session cookies. Same generation/persistence behavior as `SECRET`."""
 
     GIT_COMMIT_HASH: str = "unknown"
 
@@ -561,18 +566,20 @@ def app_settings_constructor(data_dir: Path, production: bool, env_file: Path, e
     required dependencies into the AppSettings object and nested child objects. AppSettings should not be instantiated
     directly, but rather through this factory function.
     """
-    secret_settings = {
-        "SECRET": determine_secrets(data_dir, ".secret", production),
-        "SESSION_SECRET": determine_secrets(data_dir, ".session_secret", production),
-    }
     app_settings = AppSettings(
         _env_file=env_file,  # type: ignore
         _env_file_encoding=env_encoding,  # type: ignore
         # `get_secrets_dir` must be called here rather than within `AppSettings`
         # to avoid a circular import.
         _secrets_dir=get_secrets_dir(),  # type: ignore
-        **secret_settings,
     )
+
+    # Only fall back to generated, file-persisted secrets when none were configured,
+    # so explicitly-set secrets don't require a persistent data directory.
+    if not app_settings.SECRET:
+        app_settings.SECRET = determine_secrets(data_dir, ".secret", production)
+    if not app_settings.SESSION_SECRET:
+        app_settings.SESSION_SECRET = determine_secrets(data_dir, ".session_secret", production)
 
     app_settings.DB_PROVIDER = db_provider_factory(
         app_settings.DB_ENGINE or "sqlite",

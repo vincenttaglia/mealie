@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from mealie.core.config import get_app_settings
-from mealie.core.settings.settings import AppSettings, determine_secrets
+from mealie.core.settings.settings import AppSettings, app_settings_constructor, determine_secrets
 
 
 def test_non_default_settings(monkeypatch):
@@ -478,3 +478,27 @@ class DetermineSecretsTests:
     def test_no_tmp_file_left_after_write(self, tmp_path: Path):
         determine_secrets(tmp_path, ".secret", production=True)
         assert not (tmp_path / ".tmp").exists()
+
+
+class ExplicitSecretSettingsTests:
+    def test_env_secrets_are_respected_and_not_persisted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("SECRET", "env-secret")
+        monkeypatch.setenv("SESSION_SECRET", "env-session-secret")
+
+        settings = app_settings_constructor(tmp_path, production=True, env_file=tmp_path / "missing.env")
+
+        assert settings.SECRET == "env-secret"
+        assert settings.SESSION_SECRET == "env-session-secret"
+        assert not (tmp_path / ".secret").exists()
+        assert not (tmp_path / ".session_secret").exists()
+
+    def test_unset_secrets_fall_back_to_generated_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("SECRET", raising=False)
+        monkeypatch.delenv("SESSION_SECRET", raising=False)
+
+        settings = app_settings_constructor(tmp_path, production=True, env_file=tmp_path / "missing.env")
+
+        assert settings.SECRET
+        assert (tmp_path / ".secret").read_text() == settings.SECRET
+        assert settings.SESSION_SECRET
+        assert (tmp_path / ".session_secret").read_text() == settings.SESSION_SECRET

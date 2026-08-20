@@ -61,10 +61,27 @@ object store instead (AWS S3, MinIO, Cloudflare R2, Garage, ...).
 | STORAGE_S3_PREFIX            |  `""`   | Optional key prefix prepended to every object (e.g. `mealie`), so Mealie can share a bucket with other applications                                      |
 | STORAGE_S3_FORCE_PATH_STYLE  |  False  | Use path-style addressing (the bucket name in the URL path instead of the hostname). Required by most MinIO deployments                                  |
 
-!!! warning "A local volume is still required"
+!!! warning "When is a local volume still required?"
     Object storage only holds Mealie's media and backup files. The database (SQLite), logs, secrets, and
     temporary working files always remain on local disk, so keep your data directory volume mounted even
-    when S3 storage is enabled.
+    when S3 storage is enabled — unless you run fully stateless as described below.
+
+#### Stateless deployments (no persistent volume)
+
+With S3 storage enabled, the only state left in the data directory is the SQLite database and the
+auto-generated signing secrets. Externalize both and the data directory becomes disposable scratch space
+(an ephemeral/`emptyDir` volume is fine — Mealie still needs it writable for temporary files):
+
+- Use PostgreSQL instead of SQLite (`DB_ENGINE=postgres` and the `POSTGRES_*` variables above).
+- Set `SECRET` and `SESSION_SECRET` explicitly. When unset, Mealie generates them and persists them to
+  `<data_dir>/.secret` / `<data_dir>/.session_secret`; on ephemeral storage they would be regenerated on
+  every restart, invalidating all auth tokens and sessions. Explicit values also let multiple replicas
+  share the same secrets. Generate strong values, e.g. `openssl rand -hex 32`.
+
+| Variables      | Default | Description                                                                                                          |
+| -------------- | :-----: | -------------------------------------------------------------------------------------------------------------------- |
+| SECRET         |  None   | Signing secret for auth and file tokens. Auto-generated and persisted to the data directory when unset               |
+| SESSION_SECRET |  None   | Signing secret for session cookies. Auto-generated and persisted to the data directory when unset                    |
 
 When S3 storage is enabled, media files are streamed through the Mealie API rather than served directly
 from disk, so the object store does not need to be publicly accessible — only the Mealie server needs to
