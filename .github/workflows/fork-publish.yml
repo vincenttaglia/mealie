@@ -1,0 +1,78 @@
+name: Fork - Publish Image to GHCR
+
+on:
+  push:
+    branches:
+      - feat/s3-object-storage
+    paths-ignore:
+      - "*.md"
+      - ".devcontainer/**"
+      - ".vscode/**"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish"
+        required: false
+        default: s3-storage
+
+concurrency:
+  group: fork-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-package:
+    name: Build Package
+    uses: ./.github/workflows/build-package.yml
+    with:
+      tag: ${{ inputs.tag || 's3-storage' }}
+
+  publish:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    needs:
+      - build-package
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Log in to the Container registry (ghcr.io)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve image tag
+        id: tag
+        run: echo "tag=${{ inputs.tag || 's3-storage' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Retrieve Python package
+        uses: actions/download-artifact@v6
+        with:
+          name: backend-dist
+          path: dist
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          file: ./docker/Dockerfile
+          context: .
+          build-contexts: |
+            packages=dist
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}-${{ github.sha }}
+          build-args: |
+            COMMIT=${{ github.sha }}
